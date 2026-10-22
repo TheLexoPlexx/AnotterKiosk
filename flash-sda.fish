@@ -6,23 +6,29 @@ function fail
 end
 
 set -l download_only false
-switch "$argv"
-    case --help -h
-        printf 'Usage: fish %s [--download-only]\n\n' (status filename)
-        printf 'Fetch and SHA-256-check the latest x86 image, then select a disk to erase.\n'
-        printf 'Images are cached under $XDG_CACHE_HOME/anotterkiosk (default: ~/.cache/anotterkiosk).\n'
-        printf 'Mounted disks, active swap, read-only disks and active device mappings are excluded.\n'
-        printf 'Existing kiosk FAT32 files are backed up locally and archived under updated-<timestamp>/ after flashing.\n'
-        printf 'New image defaults remain active; local backups are retained under $XDG_STATE_HOME/anotterkiosk/backups.\n'
-        exit 0
-    case --download-only
-        set download_only true
-    case ''
-    case '*'
-        fail 'Unknown arguments. Use --help.'
+set -l wait_for_release false
+for arg in $argv
+    switch "$arg"
+        case --help -h
+            printf 'Usage: fish %s [--download-only] [--wait]\n\n' (status filename)
+            printf 'Verify git state, fetch and SHA-256-check the latest x86 image for main, then select a disk to erase.\n'
+            printf '  --download-only  Download and verify the release image into cache without flashing.\n'
+            printf '  --wait           Wait for a release matching current main (60s interval, 60 retries / 60m timeout).\n\n'
+            printf 'Images are cached under $XDG_CACHE_HOME/anotterkiosk (default: ~/.cache/anotterkiosk).\n'
+            printf 'Mounted disks, active swap, read-only disks and active device mappings are excluded.\n'
+            printf 'Existing kiosk FAT32 files are backed up locally and archived under updated-<timestamp>/ after flashing.\n'
+            printf 'New image defaults remain active; local backups are retained under $XDG_STATE_HOME/anotterkiosk/backups.\n'
+            exit 0
+        case --download-only
+            set download_only true
+        case --wait
+            set wait_for_release true
+        case '*'
+            fail 'Unknown arguments. Use --help.'
+    end
 end
 
-for dependency in curl jq sha256sum xz lsblk mktemp cp mv rm mkdir seq
+for dependency in git curl jq sha256sum xz lsblk mktemp cp mv rm mkdir seq sleep
     command -q $dependency; or fail "Required command not found: $dependency"
 end
 
@@ -37,9 +43,106 @@ function matches_sha256 --argument-names image expected
     test "$fields[1]" = "$expected"
 end
 
+function release_commit_sha --argument-names api release
+    set -l target (printf '%s' "$release" | jq -er '.target_commitish // empty' 2>/dev/null | string lower)
+    if string match --quiet --regex '^[0-9a-f]{7,40}$' -- "$target"
+        printf '%s\n' "$target"
+        return 0
+    end
+    set -l tag_name (printf '%s' "$release" | jq -er '.tag_name // empty' 2>/dev/null)
+    if test -n "$tag_name"
+        set -l tag_json (fetch --silent "$api/tags/$tag_name" 2>/dev/null); or return 1
+        set -l tag_sha (printf '%s' "$tag_json" | jq -er '.commit.sha // .id // empty' 2>/dev/null | string lower)
+        if string match --quiet --regex '^[0-9a-f]{7,40}$' -- "$tag_sha"
+            printf '%s\n' "$tag_sha"
+            return 0
+        end
+    end
+    return 1
+end
+
+function release_matches_commit --argument-names release_sha target_sha
+    test -n "$release_sha" -a -n "$target_sha"; or return 1
+    string match --quiet "$release_sha*" -- "$target_sha"
+    or string match --quiet "$target_sha*" -- "$release_sha"
+end
+
+function release_has_required_assets --argument-names release
+    printf '%s' "$release" | jq -e '
+        ([.assets[]? | select(.name | test("^anotterkiosk-[A-Za-z0-9._-]+-x86[.]img[.]xz$"))] | length == 1) as $has_img
+        | ([.assets[]? | select(.name | test("^anotterkiosk-[A-Za-z0-9._-]+-x86[.]img[.]xz$"))][0].name // "") as $img_name
+        | $has_img and ([.assets[]? | select(.name == ($img_name + ".sha256"))] | length == 1)
+    ' >/dev/null 2>&1
+end
+
+set -l repo_dir (path dirname (status filename))
+git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; or fail "Not a git repository: $repo_dir"
+set -l dirty_status (git -C "$repo_dir" status --porcelain)
+if test -n "$dirty_status"
+    printf 'Warning: Git working tree is dirty; uncommitted changes are not pushed.\n' >&2
+else
+    set -l upstream '@{u}'
+    if not git -C "$repo_dir" rev-parse --verify "$upstream" >/dev/null 2>&1
+        set upstream origin/main
+    end
+    set -l unpushed (git -C "$repo_dir" rev-list --count "$upstream..HEAD" 2>/dev/null)
+    if test $status -ne 0; or test "$unpushed" -gt 0
+        printf 'Git working tree is clean with unpushed commits; pushing…\n'
+        git -C "$repo_dir" push; or fail 'Could not push commits to remote.'
+    else
+        printf 'Git working tree is clean and pushed.\n'
+    end
+end
+
+set -l main_sha (git -C "$repo_dir" rev-parse refs/heads/main 2>/dev/null; or git -C "$repo_dir" rev-parse HEAD); or fail 'Could not determine current main commit.'
+set main_sha (string lower -- "$main_sha")
+set -l main_short (string sub --length 7 -- "$main_sha")
+
 set -l api https://git.services.eisenmann-intec.local/api/v1/repos/alex/AnotterKiosk
-printf 'Checking latest AnotterKiosk release…\n'
-set -l release (fetch --silent "$api/releases/latest"); or fail 'Could not fetch latest release metadata.'
+printf 'Checking latest AnotterKiosk release (expecting main %s)…\n' "$main_short"
+set -l release (fetch --silent "$api/releases/latest" 2>/dev/null)
+set -l release_sha ''
+if test -n "$release"
+    set release_sha (release_commit_sha "$api" "$release")
+end
+
+if not begin
+        release_matches_commit "$release_sha" "$main_sha"
+        and release_has_required_assets "$release"
+    end
+    if test "$wait_for_release" != true
+        test -n "$release"; or fail 'Could not fetch latest release metadata.'
+        set -l release_short (string sub --length 7 -- "$release_sha")
+        test -n "$release_short"; or set release_short unknown
+        if not release_matches_commit "$release_sha" "$main_sha"
+            fail "Latest release ($release_short) does not stem from current main ($main_short). Use --wait to wait for a new release."
+        end
+        fail "Latest release ($main_short) is missing required x86 image assets. Use --wait to wait for the release upload."
+    end
+
+    set -l release_ready false
+    for retry in (seq 60)
+        if release_matches_commit "$release_sha" "$main_sha"
+            printf 'Release for %s found, waiting for assets to finish uploading (60s, retry %d/60)…\n' "$main_short" "$retry"
+        else
+            set -l release_short (string sub --length 7 -- "$release_sha")
+            test -n "$release_short"; or set release_short none
+            printf 'Latest release (%s) does not stem from current main (%s); waiting 60s (retry %d/60)…\n' "$release_short" "$main_short" "$retry"
+        end
+        sleep 60
+        set release (fetch --silent "$api/releases/latest" 2>/dev/null)
+        set release_sha ''
+        if test -n "$release"
+            set release_sha (release_commit_sha "$api" "$release")
+        end
+        if release_matches_commit "$release_sha" "$main_sha"; and release_has_required_assets "$release"
+            set release_ready true
+            break
+        end
+    end
+    test "$release_ready" = true; or fail "Timed out after 60 minutes (60 retries) waiting for a release from current main ($main_short)."
+end
+printf 'Latest release matches current main (%s).\n' "$main_short"
 set -l image_asset (printf '%s' "$release" | jq -ce '
     [.assets[] | select(.name | test("^anotterkiosk-[A-Za-z0-9._-]+-x86[.]img[.]xz$"))]
     | if length == 1 then .[0] else error("Expected exactly one x86 image asset") end

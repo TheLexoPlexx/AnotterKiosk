@@ -61,17 +61,48 @@ jobs:
           fi
 
           echo "Runner container lacks direct loop-device privileges; running build in a privileged container..."
-          docker run --rm --privileged \
-            -v "${GITHUB_WORKSPACE}:/workspace" \
-            -w /workspace \
-            debian:trixie \
-            bash -exc "
-              apt-get update -qq
-              DEBIAN_FRONTEND=noninteractive apt-get install -yqq ${BUILD_DEPS}
-              cp /workspace/.ci/registry-ca.crt /usr/local/share/ca-certificates/eisenmann-intec.crt
-              update-ca-certificates
-              ./build_x86.sh
-            "
+          BUILD_CMD="
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -yqq ${BUILD_DEPS}
+            cp .ci/registry-ca.crt /usr/local/share/ca-certificates/eisenmann-intec.crt
+            update-ca-certificates
+            ./build_x86.sh
+            mkdir -p .ci/out
+            cp -f anotterkiosk-*-x86.img.xz version-info .ci/out/
+          "
+
+          # Try direct bind-mount first (works when GITHUB_WORKSPACE is a host path)
+          if docker run --rm -v "${GITHUB_WORKSPACE}:/workspace" debian:trixie test -f /workspace/build_x86.sh 2>/dev/null; then
+            docker run --rm --privileged \
+              -v "${GITHUB_WORKSPACE}:/workspace" \
+              -w /workspace \
+              debian:trixie \
+              bash -exc "${BUILD_CMD}"
+            exit 0
+          fi
+
+          # Try --volumes-from when runner job runs inside a container using a named Docker volume
+          SELF_CID="$(awk -F/ '/\/docker\/containers\//{for(i=1;i<=NF;i++) if($i=="containers"){print $(i+1); exit}}' /proc/self/mountinfo 2>/dev/null || true)"
+          if [ -z "${SELF_CID}" ]; then
+            SELF_CID="$(hostname)"
+          fi
+          if [ -n "${SELF_CID}" ] && docker run --rm --volumes-from "${SELF_CID}" -w "${GITHUB_WORKSPACE}" debian:trixie test -f build_x86.sh 2>/dev/null; then
+            docker run --rm --privileged \
+              --volumes-from "${SELF_CID}" \
+              -w "${GITHUB_WORKSPACE}" \
+              debian:trixie \
+              bash -exc "${BUILD_CMD}"
+            exit 0
+          fi
+
+          # Fallback: copy workspace into privileged build container and copy built artifacts back out
+          CID="$(docker create --privileged -w /workspace debian:trixie bash -exc "${BUILD_CMD}")"
+          trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
+          docker cp "${GITHUB_WORKSPACE}/." "${CID}:/workspace"
+          docker start -a "${CID}"
+          docker cp "${CID}:/workspace/.ci/out/." "${GITHUB_WORKSPACE}/"
+          docker rm -f "${CID}" >/dev/null 2>&1 || true
+          trap - EXIT
 
       - name: Publish image to Gitea Release
         if: github.event_name != 'pull_request'
