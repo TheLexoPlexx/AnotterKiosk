@@ -28,9 +28,10 @@ Other similar projects:
 - [USB flash drive, USB SSD, etc. compatible](#how-to--installation-guide)
 - aarch64 images for Raspberry Pis (_significant_ performance improvements over armv7/32bit ARM)
 - Read-only filesystem (no more broken SD cards)
+- Dual-screen support with independent Chromium instances, independent resolutions (automatic EDID detection or explicitly forced per screen), and Wacom pen/touch input bound strictly to the interactive display (with automatic USB hot-plug recovery)
 - Browser cache can be cleared at configurable intervals
 - [HTTP watchdog (website needs to send heartbeat messages via XHR/AJAX to localhost)](#http-watchdog-functionality)
-- Force specific resolution (1080p on 4k screens, broken EDID, etc.)
+- Force specific resolution per display (1080p on 4k screens, broken EDID, etc.) or use automatic EDID resolution
 - Configurable audio output (HDMI, 3.5mm, USB audio, etc.)
 - Hard NTP handling (will wait for NTP at boot)
 - SSH support
@@ -94,11 +95,59 @@ You can use a tool like the [Raspberry Pi Imager](https://www.raspberrypi.com/so
 When using the latter two, make sure to extract the .gz compression first (using a tool like 7zip).  
 
 After flashing, re-plug the storage device and open the FAT32 partition.  
-Open the [`kioskbrowser.ini`](https://github.com/Manawyrm/AnotterKiosk/blob/main/kiosk_skeleton/boot/firmware/kioskbrowser.ini) file in a text editor and change everything to your needs.  
+Open the [`kioskbrowser.ini`](kiosk_skeleton/boot/firmware/kioskbrowser.ini) file in a text editor and change everything to your needs.  
 More complex WiFi setups (like WPA2-Enterprise) can be configured by creating a wpa_supplicant.conf.  
 Adding your own SSH keys can be done by creating a authorized_keys file.  
 If you want to use the autossh tunneling features, copy an SSH private key as either "id_rsa" or "id_ed25519".  
 The splash screen can be customized by replacing (or entirely removing) `splash.png`.
+Custom Root CA certificates (`.crt` or `.pem`) can be placed directly on the FAT32 partition (or in a `ca-certificates/` folder on it) to be imported automatically into Chromium's NSS trust store at boot.
+
+## Dual-Screen & Wacom Configuration
+
+In [`kioskbrowser.ini`](kiosk_skeleton/boot/firmware/kioskbrowser.ini), two displays and two isolated Chromium instances (`wacom` and `tv`) are configured independently:
+
+```ini
+[screen]
+wacom_output = "DP-1"
+;wacom_resolution = "1920x1080"
+;wacom_rotate = "normal"
+
+tv_output = "HDMI-1"
+;tv_resolution = "1920x1080"
+;tv_rotate = "normal"
+
+[browser]
+wacom_url="https://example.com/interactive"
+tv_url="https://example.com/dashboard"
+```
+
+- **Automatic vs. Explicit Resolution:** If `wacom_resolution` or `tv_resolution` is omitted/commented out, `xrandr --auto` activates each screen's native EDID resolution and automatically calculates the window sizes and side-by-side offset (`${WACOM_W}x0`) for the two Chromium instances.
+- **Wacom Input Binding:** All Wacom sub-devices (Pen, Eraser, Finger Touch) are bound strictly to `wacom_output` on startup and automatically re-bound via `udev` (`99-wacom-kiosk.rules` -> `kiosk-wacom-remap.service`) if the Wacom USB cable is unplugged and reconnected.
+
+## Building the Image
+
+Note that AnotterKiosk produces a raw bootable disk image (`.img` / `.img.xz`) rather than an installer `.iso`, because the image contains the ready-to-run GPT partition table (FAT32 `/boot/firmware` config partition + read-only ext4 root filesystem).
+
+### Option A: Build locally on Linux (Debian/Ubuntu)
+1. Install the required build dependencies:
+   ```bash
+   sudo apt update
+   sudo apt install -y libguestfs-tools qemu-utils qemu-system-x86 ovmf qemu-block-extra \
+     qemu-user-static binfmt-support rsync sudo wget xz-utils pigz mount dosfstools \
+     libarchive-tools debootstrap zerofree util-linux fdisk
+   ```
+2. Run the x86 build script:
+   ```bash
+   ./build_x86.sh
+   ```
+   This produces `anotterkiosk-<version>-x86.img.xz` in the repository root.
+
+### Option B: Build via GitHub Actions
+Push a git tag (or trigger the workflow in [`.github/workflows/main.yml`](.github/workflows/main.yml)) to build and attach `anotterkiosk-<tag>-x86.img.xz` to a GitHub Release automatically.
+
+### Flashing the `.img.xz` to a Target PC or Drive
+- **Direct to USB/NVMe/SATA drive:** Flash `anotterkiosk-<version>-x86.img.xz` directly using [BalenaEtcher](https://etcher.balena.io/), [Raspberry Pi Imager](https://www.raspberrypi.com/software/), or `xzcat anotterkiosk-*-x86.img.xz | sudo dd of=/dev/sdX bs=4M status=progress`.
+- **Booting in a VM / Converting to VMDK/QCOW2:** Decompress with `unxz anotterkiosk-*-x86.img.xz` and either boot the `.img` directly in QEMU/KVM (with UEFI/OVMF enabled) or convert it with `qemu-img convert`.
 
 ## HTTP watchdog functionality
 Browsers are complex, networks are unstable and software can be buggy.   
@@ -109,12 +158,12 @@ If your page is being reloaded often (like with a <meta refresh=-header), you ca
 <img src="http://localhost/heartbeat.php" style="display: none;">
 ```
 
-If your page stays on one page for a long time (or is just a single-page application), you might want to use AJAX requests to send a heartbeat:
+If your page stays on one page for a long time (or is just a single-page application), you might want to use AJAX requests to send a heartbeat. You can also pass `?screen=wacom` or `?screen=tv` to monitor and restart each browser instance independently:
 ```html
 <script>
 const req = new XMLHttpRequest();
 setInterval(function() {
-	req.open("GET", "http://localhost/heartbeat.php");
+	req.open("GET", "http://localhost/heartbeat.php?screen=wacom");
 	req.send();
 }, 2000);
 </script>

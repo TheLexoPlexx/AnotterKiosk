@@ -5,7 +5,7 @@ set -x -e
 apt update
 
 APT_LISTCHANGES_FRONTEND=none DEBIAN_FRONTEND=noninteractive apt dist-upgrade -y --option=Dpkg::Options::=--force-confdef
-DEBIAN_FRONTEND=noninteractive apt install -y wget curl fonts-noto-color-emoji lightdm openbox nginx php-fpm php-cli chromium autossh unclutter x11-xserver-utils xdotool htop nano openssh-server rsync x11vnc lm-sensors ntpsec-ntpdate scrot wireless-regdb fontconfig console-data ifupdown iproute2 wpasupplicant iw wireless-tools haveged rfkill fbi feh
+DEBIAN_FRONTEND=noninteractive apt install -y wget curl fonts-noto-color-emoji lightdm openbox nginx php-fpm php-cli chromium autossh unclutter x11-xserver-utils xserver-xorg-input-wacom libwacom-common libnss3-tools xdotool htop nano openssh-server rsync x11vnc lm-sensors ntpsec-ntpdate scrot wireless-regdb fontconfig console-data ifupdown iproute2 wpasupplicant iw wireless-tools haveged rfkill fbi feh
 
 rsync -a --chown=root:root "/kiosk_skeleton/." "/"
 
@@ -43,6 +43,17 @@ mkdir -p /root/.ssh
 
 mkdir -p /home/pi/.local/share/pki/nssdb
 chown -hR 1000:1000 /home/pi/.local
+
+# Initialize skeleton NSS database and import any build-time Root CA certificates
+mkdir -p /etc/skel/.pki/nssdb
+certutil -d sql:/etc/skel/.pki/nssdb -N --empty-password
+if [ -d /etc/skel/.pki/ca-certificates ]; then
+	for cert in /etc/skel/.pki/ca-certificates/*.crt /etc/skel/.pki/ca-certificates/*.pem; do
+		if [ -f "$cert" ]; then
+			certutil -d sql:/etc/skel/.pki/nssdb -A -t "C,," -n "$(basename "$cert")" -i "$cert"
+		fi
+	done
+fi
 
 mkdir -p /var/lib/lightdm
 mkdir -p /var/lib/dhcp

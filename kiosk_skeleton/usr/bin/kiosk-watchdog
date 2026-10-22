@@ -5,16 +5,62 @@ sleep(60);
 
 $config = parse_ini_file("/boot/firmware/kioskbrowser.ini", true, INI_SCANNER_NORMAL);
 
-if (isset($config["watchdog"]) && isset($config["watchdog"]["enabled"]))
+if (isset($config["watchdog"]) && isset($config["watchdog"]["enabled"]) && trim($config["watchdog"]["enabled"]) == 1)
 {
-	if (trim($config["watchdog"]["enabled"]) == 1)
-	{
-		while (true)
-		{
-			clearstatcache();
-			$last_heartbeat = filemtime("/dev/shm/heartbeat");
+	$timeout = (int)($config["watchdog"]["timeout"] ?? 60);
+	$timeout_reboot = (int)($config["watchdog"]["timeout_reboot"] ?? 600);
 
-			if ((time() - $last_heartbeat) > $config["watchdog"]["timeout"])
+	$last_restart_wacom = 0;
+	$last_restart_tv = 0;
+
+	while (true)
+	{
+		clearstatcache();
+		$now = time();
+
+		$has_per_screen = file_exists("/dev/shm/heartbeat-wacom") || file_exists("/dev/shm/heartbeat-tv");
+
+		if ($has_per_screen)
+		{
+			$screens = [
+				"wacom" => [
+					"file" => "/dev/shm/heartbeat-wacom",
+					"pattern" => "/tmp/kiosk-wacom",
+					"last_restart" => &$last_restart_wacom,
+				],
+				"tv" => [
+					"file" => "/dev/shm/heartbeat-tv",
+					"pattern" => "/tmp/kiosk-tv",
+					"last_restart" => &$last_restart_tv,
+				],
+			];
+
+			foreach ($screens as $name => &$info)
+			{
+				if (!file_exists($info["file"]))
+				{
+					continue;
+				}
+				$last_hb = filemtime($info["file"]);
+				if (($now - $last_hb) > $timeout_reboot)
+				{
+					error_log("Exceeded timeout_reboot on {$name}! Rebooting system.");
+					exec("reboot");
+				}
+				elseif (($now - $last_hb) > $timeout && ($now - $info["last_restart"]) > 60)
+				{
+					error_log("Exceeded timeout on {$name}! Restarting {$name} Chromium instance.");
+					exec("pkill -f " . escapeshellarg($info["pattern"]));
+					$info["last_restart"] = $now;
+				}
+			}
+			unset($info);
+		}
+		else
+		{
+			$last_heartbeat = @filemtime("/dev/shm/heartbeat");
+
+			if (($now - $last_heartbeat) > $timeout)
 			{
 				error_log("Exceeded timeout! Restarting network & lightdm.");
 				exec("systemctl restart networking");
@@ -22,13 +68,13 @@ if (isset($config["watchdog"]) && isset($config["watchdog"]["enabled"]))
 				// Cooldown delay (give the system time to reinitialize)
 				sleep(60);
 			}
-			if ((time() - $last_heartbeat) > $config["watchdog"]["timeout_reboot"])
+			if (($now - $last_heartbeat) > $timeout_reboot)
 			{
 				error_log("Exceeded timeout_reboot! Rebooting system.");
 				exec("reboot");
 			}
-
-			sleep(5);
 		}
+
+		sleep(5);
 	}
 }

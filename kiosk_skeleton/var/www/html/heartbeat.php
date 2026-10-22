@@ -6,3 +6,11 @@ header("Cache-Control: post-check=0, pre-check=0", false);
 header("Pragma: no-cache");
 
 touch("/dev/shm/heartbeat");
+
+if (isset($_GET["screen"])) {
+	if ($_GET["screen"] === "wacom") {
+		touch("/dev/shm/heartbeat-wacom");
+	} elseif ($_GET["screen"] === "tv") {
+		touch("/dev/shm/heartbeat-tv");
+	}
+}

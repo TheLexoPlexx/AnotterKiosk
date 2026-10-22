@@ -1,0 +1,3 @@
+# Re-bind Wacom tablet input sub-devices (Pen, Eraser, Touch) to WACOM_OUTPUT on USB hot-plug
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{idVendor}=="056a", RUN+="/bin/systemctl start --no-block kiosk-wacom-remap.service"
+ACTION=="add|change", SUBSYSTEM=="usb", ATTR{idVendor}=="056a", RUN+="/bin/systemctl start --no-block kiosk-wacom-remap.service"

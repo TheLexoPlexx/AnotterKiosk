@@ -1,0 +1,52 @@
+#!/bin/bash
+
+export DISPLAY="${DISPLAY:-:0}"
+
+INI="/boot/firmware/kioskbrowser.ini"
+WACOM_OUTPUT=$(get-ini "${INI}" screen wacom_output 2>/dev/null || true)
+if [ -z "${WACOM_OUTPUT}" ]; then
+	WACOM_OUTPUT=$(xrandr -q 2>/dev/null | awk '/ connected/{print $1; exit}')
+fi
+
+if [ -z "${WACOM_OUTPUT}" ]; then
+	exit 0
+fi
+
+WACOM_ROTATE=$(get-ini "${INI}" screen wacom_rotate 2>/dev/null || true)
+case "${WACOM_ROTATE}" in
+	left)     XSETWACOM_ROTATE="ccw" ;;
+	right)    XSETWACOM_ROTATE="cw" ;;
+	inverted) XSETWACOM_ROTATE="half" ;;
+	normal)   XSETWACOM_ROTATE="none" ;;
+	*)        XSETWACOM_ROTATE="" ;;
+esac
+
+map_devices() {
+	if command -v xsetwacom >/dev/null 2>&1; then
+		xsetwacom --list devices 2>/dev/null | awk -F'id: |\t' '{print $2}' | while read -r id; do
+			if [ -n "${id}" ]; then
+				xsetwacom --set "${id}" MapToOutput "${WACOM_OUTPUT}" 2>/dev/null || true
+				if [ -n "${XSETWACOM_ROTATE}" ]; then
+					xsetwacom --set "${id}" Rotate "${XSETWACOM_ROTATE}" 2>/dev/null || true
+				fi
+			fi
+		done
+	fi
+
+	if command -v xinput >/dev/null 2>&1; then
+		xinput list 2>/dev/null | grep -i "wacom" | sed -n 's/.*id=\([0-9]*\).*/\1/p' | while read -r id; do
+			if [ -n "${id}" ]; then
+				xinput map-to-output "${id}" "${WACOM_OUTPUT}" 2>/dev/null || true
+			fi
+		done
+	fi
+}
+
+if [ "$1" = "--wait" ]; then
+	for delay in 0.5 1 2; do
+		sleep "${delay}"
+		map_devices
+	done
+else
+	map_devices
+fi

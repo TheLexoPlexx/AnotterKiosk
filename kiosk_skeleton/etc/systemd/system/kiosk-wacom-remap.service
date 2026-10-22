@@ -1,0 +1,9 @@
+[Unit]
+Description=Remap Wacom input devices to the interactive kiosk screen
+After=lightdm.service
+
+[Service]
+Type=oneshot
+User=pi
+Environment=DISPLAY=:0
+ExecStart=/usr/bin/kiosk-map-wacom --wait

@@ -1,12 +1,14 @@
 #!/bin/bash
 
+INI="/boot/firmware/kioskbrowser.ini"
+
 # display splash screen as Openbox background
 if [ -f /boot/firmware/splash.png ]; then
-   feh --bg-center /boot/firmware/splash.png
+	feh --bg-center /boot/firmware/splash.png
 fi
 
-VNC_ENABLED=$(get-ini /boot/firmware/kioskbrowser.ini vnc enabled)
-if [ "${VNC_ENABLED}" -eq 1 ]
+VNC_ENABLED=$(get-ini "${INI}" vnc enabled || echo 0)
+if [ "${VNC_ENABLED:-0}" -eq 1 ]
 then
 	x11vnc -localhost &
 fi
@@ -15,119 +17,257 @@ fi
 xdotool mousemove 0 0
 
 # disable blanking or configure user-defined blanking interval
-BLANKING=$(get-ini /boot/firmware/kioskbrowser.ini screen blanking_interval)
+BLANKING=$(get-ini "${INI}" screen blanking_interval || true)
 if [ -n "${BLANKING}" ]
 then
-        xset s "${BLANKING}" # blank after n seconds
+	xset s "${BLANKING}" # blank after n seconds
 else
-        xset s off # don't activate screensaver
-        xset -dpms # disable DPMS (Energy Star) features.
-        xset s noblank # don't blank the video device
+	xset s off # don't activate screensaver
+	xset -dpms # disable DPMS (Energy Star) features.
+	xset s noblank # don't blank the video device
 fi
 
 # hide mouse cursor after 1 second
 unclutter -idle 1 -root &
 
 # set a custom audio output device (if specified)
-AUDIO_DEVICE=$(get-ini /boot/firmware/kioskbrowser.ini audio device)
+AUDIO_DEVICE=$(get-ini "${INI}" audio device || true)
 if [ -n "${AUDIO_DEVICE}" ]
 then
 	echo "pcm.!default \"${AUDIO_DEVICE}\"" > /tmp/asoundrc
 fi
 
-# set a custom resolution (if specified)
-RESOLUTION=$(get-ini /boot/firmware/kioskbrowser.ini screen force_resolution)
-if [ -n "${RESOLUTION}" ]
-then
-	MONITOR=$(xrandr -q | grep " connected" | awk '{ print $1; }')
-	xrandr --output "${MONITOR}" --mode "${RESOLUTION}"
+# populate NSS certificate database in tmpfs (/home/pi/.pki/nssdb) from skeleton and boot partition
+mkdir -p /home/pi/.pki/nssdb
+if [ -d /etc/skel/.pki/nssdb ] && [ -n "$(ls -A /etc/skel/.pki/nssdb 2>/dev/null)" ]; then
+	cp -a /etc/skel/.pki/nssdb/. /home/pi/.pki/nssdb/
+elif command -v certutil >/dev/null 2>&1 && [ ! -f /home/pi/.pki/nssdb/cert9.db ]; then
+	certutil -d sql:/home/pi/.pki/nssdb -N --empty-password || true
+fi
+if command -v certutil >/dev/null 2>&1; then
+	for cert in /boot/firmware/*.crt /boot/firmware/*.pem /boot/firmware/ca-certificates/*.crt /boot/firmware/ca-certificates/*.pem; do
+		if [ -f "${cert}" ]; then
+			certutil -d sql:/home/pi/.pki/nssdb -A -t "C,," -n "$(basename "${cert}")" -i "${cert}" || true
+		fi
+	done
 fi
 
-# set a custom modeline (if specified)
-CUSTOM_MODELINE=$(get-ini /boot/firmware/kioskbrowser.ini screen custom_modeline)
-if [ -n "${CUSTOM_MODELINE}" ]
-then
-	MONITOR=$(xrandr -q | grep " connected" | awk '{ print $1; }')
-	xrandr --newmode "custom" ${CUSTOM_MODELINE}
-	xrandr --addmode "${MONITOR}" "custom"
-	xrandr --output "${MONITOR}" --mode "custom"
+# determine outputs for Wacom (interactive) and TV (passive) displays
+WACOM_OUTPUT=$(get-ini "${INI}" screen wacom_output || true)
+TV_OUTPUT=$(get-ini "${INI}" screen tv_output || true)
+
+if [ -z "${WACOM_OUTPUT}" ]; then
+	WACOM_OUTPUT=$(xrandr -q | awk '/ connected/{print $1}' | sed -n '1p')
+fi
+if [ -z "${TV_OUTPUT}" ]; then
+	TV_OUTPUT=$(xrandr -q | awk '/ connected/{print $1}' | grep -v "^${WACOM_OUTPUT}$" | sed -n '1p')
 fi
 
-# set a screen rotation (if specified)
-ROTATE_SCREEN=$(get-ini /boot/firmware/kioskbrowser.ini screen rotate_screen)
-if [ -n "${ROTATE_SCREEN}" ]
-then
-	MONITOR=$(xrandr -q | grep " connected" | awk '{ print $1; }')
-	xrandr --output "${MONITOR}" --rotate ${ROTATE_SCREEN}	
+LEGACY_RESOLUTION=$(get-ini "${INI}" screen force_resolution || true)
+WACOM_RESOLUTION=$(get-ini "${INI}" screen wacom_resolution || echo "${LEGACY_RESOLUTION}")
+TV_RESOLUTION=$(get-ini "${INI}" screen tv_resolution || echo "${LEGACY_RESOLUTION}")
+
+LEGACY_MODELINE=$(get-ini "${INI}" screen custom_modeline || true)
+WACOM_MODELINE=$(get-ini "${INI}" screen wacom_custom_modeline || echo "${LEGACY_MODELINE}")
+TV_MODELINE=$(get-ini "${INI}" screen tv_custom_modeline || true)
+
+LEGACY_ROTATE=$(get-ini "${INI}" screen rotate_screen || true)
+WACOM_ROTATE=$(get-ini "${INI}" screen wacom_rotate || echo "${LEGACY_ROTATE}")
+TV_ROTATE=$(get-ini "${INI}" screen tv_rotate || true)
+
+# build xrandr mode arguments for Wacom display
+if [ -n "${WACOM_MODELINE}" ] && [ -n "${WACOM_OUTPUT}" ]; then
+	xrandr --newmode "wacom_custom" ${WACOM_MODELINE} || true
+	xrandr --addmode "${WACOM_OUTPUT}" "wacom_custom" || true
+	WACOM_MODE_ARGS="--mode wacom_custom"
+	if [ -z "${WACOM_RESOLUTION}" ]; then
+		WACOM_RESOLUTION=$(echo "${WACOM_MODELINE}" | awk '{print $2 "x" $6}')
+	fi
+elif [ -n "${WACOM_RESOLUTION}" ]; then
+	WACOM_MODE_ARGS="--mode ${WACOM_RESOLUTION}"
+else
+	WACOM_MODE_ARGS="--auto"
 fi
+
+if [ -n "${WACOM_ROTATE}" ]; then
+	WACOM_ROTATE_ARGS="--rotate ${WACOM_ROTATE}"
+else
+	WACOM_ROTATE_ARGS=""
+fi
+
+# build xrandr mode arguments for TV display
+if [ -n "${TV_MODELINE}" ] && [ -n "${TV_OUTPUT}" ]; then
+	xrandr --newmode "tv_custom" ${TV_MODELINE} || true
+	xrandr --addmode "${TV_OUTPUT}" "tv_custom" || true
+	TV_MODE_ARGS="--mode tv_custom"
+	if [ -z "${TV_RESOLUTION}" ]; then
+		TV_RESOLUTION=$(echo "${TV_MODELINE}" | awk '{print $2 "x" $6}')
+	fi
+elif [ -n "${TV_RESOLUTION}" ]; then
+	TV_MODE_ARGS="--mode ${TV_RESOLUTION}"
+else
+	TV_MODE_ARGS="--auto"
+fi
+
+if [ -n "${TV_ROTATE}" ]; then
+	TV_ROTATE_ARGS="--rotate ${TV_ROTATE}"
+else
+	TV_ROTATE_ARGS=""
+fi
+
+# helper to parse WIDTH and HEIGHT (accounting for left/right rotation)
+get_dimensions() {
+	local output="$1"
+	local configured_res="$2"
+	local rotate="$3"
+	local res="${configured_res}"
+
+	if [ -z "${res}" ] && [ -n "${output}" ]; then
+		# Check active mode (*) first, then preferred mode (+), then first available mode
+		res=$(xrandr -q | awk -v out="${output}" '
+			$1 == out { in_out=1; next }
+			in_out && /^[A-Za-z]/ { in_out=0 }
+			in_out && /\*/ { print $1; found=1; exit }
+			in_out && /\+/ && !pref { pref=$1 }
+			in_out && /^[[:space:]]+[0-9]+x[0-9]+/ && !first { first=$1 }
+			END { if (!found) { if (pref) print pref; else if (first) print first } }
+		')
+	fi
+	res="${res:-1920x1080}"
+
+	local w="${res%x*}"
+	local h="${res#*x}"
+	if [ "${rotate}" = "left" ] || [ "${rotate}" = "right" ]; then
+		echo "${h} ${w}"
+	else
+		echo "${w} ${h}"
+	fi
+}
+
+# enable outputs first so automatic EDID resolution is active if not manually specified
+if [ -n "${WACOM_OUTPUT}" ]; then
+	xrandr --output "${WACOM_OUTPUT}" ${WACOM_MODE_ARGS} ${WACOM_ROTATE_ARGS} || true
+fi
+if [ -n "${TV_OUTPUT}" ]; then
+	xrandr --output "${TV_OUTPUT}" ${TV_MODE_ARGS} ${TV_ROTATE_ARGS} || true
+fi
+
+read -r WACOM_W WACOM_H <<< "$(get_dimensions "${WACOM_OUTPUT}" "${WACOM_RESOLUTION}" "${WACOM_ROTATE}")"
+read -r TV_W TV_H <<< "$(get_dimensions "${TV_OUTPUT}" "${TV_RESOLUTION}" "${TV_ROTATE}")"
+
+# position displays side-by-side via xrandr
+if [ -n "${WACOM_OUTPUT}" ] && [ -n "${TV_OUTPUT}" ]; then
+	xrandr --output "${WACOM_OUTPUT}" ${WACOM_MODE_ARGS} --pos 0x0 --primary ${WACOM_ROTATE_ARGS} \
+	       --output "${TV_OUTPUT}" ${TV_MODE_ARGS} --pos "${WACOM_W}x0" ${TV_ROTATE_ARGS}
+elif [ -n "${WACOM_OUTPUT}" ]; then
+	xrandr --output "${WACOM_OUTPUT}" ${WACOM_MODE_ARGS} --pos 0x0 --primary ${WACOM_ROTATE_ARGS}
+fi
+
+# bind all Wacom input sub-devices (Pen, Eraser, Finger Touch) strictly to WACOM_OUTPUT
+/usr/bin/kiosk-map-wacom
 
 # enable/disable dark mode
-DARK_MODE=$(get-ini /boot/firmware/kioskbrowser.ini browser darkmode)
-if [ "${DARK_MODE}" -eq 1 ]
+DARK_MODE=$(get-ini "${INI}" browser darkmode || echo 0)
+if [ "${DARK_MODE:-0}" -eq 1 ]
 then
-    export GTK_THEME=Adwaita-dark
-    CHROME_DARK_MODE_FLAGS="--enable-features=WebContentsForceDark:inversion_method/cielab_based/image_behavior/none"
+	export GTK_THEME=Adwaita-dark
+	CHROME_DARK_MODE_FLAGS="--enable-features=WebContentsForceDark:inversion_method/cielab_based/image_behavior/none"
 else
 	export GTK_THEME=Adwaita
 	CHROME_DARK_MODE_FLAGS=""
 fi
 
 # enable/disable hardware acceleration
-HW_ACCEL=$(get-ini /boot/firmware/kioskbrowser.ini browser hardware_accel)
-if [ "${HW_ACCEL}" -eq 1 ]
+HW_ACCEL=$(get-ini "${INI}" browser hardware_accel || echo 0)
+if [ "${HW_ACCEL:-0}" -eq 1 ]
 then
-    CHROME_GPU_FLAGS=""
+	CHROME_GPU_FLAGS=""
 else
-    CHROME_GPU_FLAGS="--disable-gpu"
+	CHROME_GPU_FLAGS="--disable-gpu"
 fi
 
 # enable/disable low_end_device_mode
-LOW_END=$(get-ini /boot/firmware/kioskbrowser.ini browser low_end_device_mode)
-if [ "${LOW_END}" -eq 1 ]
+LOW_END=$(get-ini "${INI}" browser low_end_device_mode || echo 0)
+if [ "${LOW_END:-0}" -eq 1 ]
 then
-    CHROME_LOW_END_FLAGS="--enable-low-end-device-mode --disable-composited-antialiasing --disable-low-res-tiling"
+	CHROME_LOW_END_FLAGS="--enable-low-end-device-mode --disable-composited-antialiasing --disable-low-res-tiling"
 else
-    CHROME_LOW_END_FLAGS="--disable-low-end-device-mode"
+	CHROME_LOW_END_FLAGS="--disable-low-end-device-mode"
 fi
 
 # enable/disable "disk" caching (ram disk in our case)
-DISABLE_CACHE=$(get-ini /boot/firmware/kioskbrowser.ini browser disable_cache)
-if [ "${DISABLE_CACHE}" -eq 1 ]
+DISABLE_CACHE=$(get-ini "${INI}" browser disable_cache || echo 0)
+if [ "${DISABLE_CACHE:-0}" -eq 1 ]
 then
-    CHROME_CACHE_FLAGS="--disk-cache-dir=/dev/null"
+	CHROME_CACHE_FLAGS="--disk-cache-dir=/dev/null"
 else
-    CHROME_CACHE_FLAGS=""
+	CHROME_CACHE_FLAGS=""
 fi
 
-# start chromium
-URL=$(get-ini /boot/firmware/kioskbrowser.ini browser url)
-chromium --start-fullscreen \
-		 --allow-insecure-localhost \
-		 --autoplay-policy=no-user-gesture-required \
-		 --check-for-update-interval=1 \
-		 --disable-component-update \
-		 --disable-features=Translate \
-		 --disable-features=TranslateUI \
-		 --disable-infobars \
-		 --disable-pinch \
-		 --disable-session-crashed-bubble \
-		 --disable-smooth-scrolling \
-		 --kiosk \
-		 --noerrdialogs \
-		 --overscroll-history-navigation=0 \
-		 --simulate-critical-update \
-		 --simulate-outdated-no-au='Tue, 31 Dec 2099 23:59:59 GMT' \
-		 --touch-events=enabled \
-		 --process-per-site \
-		 --no-memcheck \
-		 ${CHROME_DARK_MODE_FLAGS} \
-		 ${CHROME_GPU_FLAGS} \
-		 ${CHROME_LOW_END_FLAGS} \
-		 ${CHROME_CACHE_FLAGS} \
-		 ${URL} &
+LEGACY_URL=$(get-ini "${INI}" browser url || true)
+WACOM_URL=$(get-ini "${INI}" browser wacom_url || echo "${LEGACY_URL}")
+TV_URL=$(get-ini "${INI}" browser tv_url || echo "${LEGACY_URL}")
+
+COMMON_CHROME_FLAGS=(
+	--allow-insecure-localhost
+	--autoplay-policy=no-user-gesture-required
+	--check-for-update-interval=1
+	--disable-component-update
+	--disable-features=Translate
+	--disable-features=TranslateUI
+	--disable-infobars
+	--disable-session-crashed-bubble
+	--disable-smooth-scrolling
+	--kiosk
+	--no-first-run
+	--noerrdialogs
+	--simulate-critical-update
+	--simulate-outdated-no-au='Tue, 31 Dec 2099 23:59:59 GMT'
+	--process-per-site
+	--no-memcheck
+)
+
+# start interactive Wacom Chromium instance (supervised loop)
+if [ -n "${WACOM_URL}" ]; then
+	(
+		while true; do
+			chromium --user-data-dir=/tmp/kiosk-wacom \
+				 --window-position=0,0 \
+				 --window-size="${WACOM_W},${WACOM_H}" \
+				 --disable-pinch \
+				 --overscroll-history-navigation=0 \
+				 --touch-events=enabled \
+				 "${COMMON_CHROME_FLAGS[@]}" \
+				 ${CHROME_DARK_MODE_FLAGS} \
+				 ${CHROME_GPU_FLAGS} \
+				 ${CHROME_LOW_END_FLAGS} \
+				 ${CHROME_CACHE_FLAGS} \
+				 "${WACOM_URL}"
+			sleep 2
+		done
+	) &
+fi
+
+# start passive TV Chromium instance (supervised loop)
+if [ -n "${TV_URL}" ]; then
+	(
+		while true; do
+			chromium --user-data-dir=/tmp/kiosk-tv \
+				 --window-position="${WACOM_W},0" \
+				 --window-size="${TV_W},${TV_H}" \
+				 "${COMMON_CHROME_FLAGS[@]}" \
+				 ${CHROME_DARK_MODE_FLAGS} \
+				 ${CHROME_GPU_FLAGS} \
+				 ${CHROME_LOW_END_FLAGS} \
+				 ${CHROME_CACHE_FLAGS} \
+				 "${TV_URL}"
+			sleep 2
+		done
+	) &
+fi
 
 # if a cache clearing interval is specified, launch the cache-clear-timer (while true, sleep, rm -rf)
-CACHE_CLEAR=$(get-ini /boot/firmware/kioskbrowser.ini browser cache_clear_interval)
+CACHE_CLEAR=$(get-ini "${INI}" browser cache_clear_interval || true)
 if [ -n "${CACHE_CLEAR}" ]
 then
 	/usr/bin/cache-clear-timer "${CACHE_CLEAR}" &

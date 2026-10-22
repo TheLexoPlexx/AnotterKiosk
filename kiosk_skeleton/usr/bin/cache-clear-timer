@@ -1,6 +1,8 @@
 #!/bin/bash
 while true
 do
-	sleep $1
-	rm -r /home/pi/.cache/chromium/Default || true
+	sleep "$1"
+	rm -rf /tmp/kiosk-wacom/Default/Cache /tmp/kiosk-wacom/Default/Code\ Cache || true
+	rm -rf /tmp/kiosk-tv/Default/Cache /tmp/kiosk-tv/Default/Code\ Cache || true
+	rm -rf /home/pi/.cache/chromium/Default || true
 done
