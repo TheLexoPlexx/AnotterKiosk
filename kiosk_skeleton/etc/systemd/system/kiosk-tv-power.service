@@ -1,0 +1,16 @@
+[Unit]
+Description=Turn TV on at startup and off before shutdown via CEC and HDMI signal
+After=lightdm.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=pi
+Environment=DISPLAY=:0
+ExecStart=/usr/bin/kiosk-tv-power on
+ExecStop=/usr/bin/kiosk-tv-power off
+TimeoutStartSec=10
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

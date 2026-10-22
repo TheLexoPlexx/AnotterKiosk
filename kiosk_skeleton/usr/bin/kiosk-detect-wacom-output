@@ -29,25 +29,26 @@ function edid_matches_wacom(string $edid_bin, array $serials): int {
 	if (strlen($edid_bin) < 128) {
 		return 0;
 	}
-	// Priority 3 (highest): exact serial number match in EDID
+	// Priority 4 (highest): exact serial number match in EDID
 	foreach ($serials as $serial) {
 		if ($serial !== "" && strpos($edid_bin, $serial) !== false) {
-			return 3;
+			return 4;
 		}
 	}
-	// Priority 2: Wacom model name in EDID descriptor (e.g. "Wacom DTC141")
+	// Priority 3: Wacom model name in EDID descriptor (e.g. "Wacom DTC141")
 	if (stripos($edid_bin, "Wacom") !== false || stripos($edid_bin, "DTC141") !== false) {
-		return 2;
+		return 3;
 	}
-	// Priority 1: EDID Manufacturer ID == "WAC" (0x5c23 at bytes 8..9)
+	// Priority 2: EDID Manufacturer ID == "WAC" (0x5c23 at bytes 8..9)
 	$raw = unpack("n", substr($edid_bin, 8, 2))[1];
 	$mfg = chr((($raw >> 10) & 0x1f) + 64)
 	     . chr((($raw >> 5) & 0x1f) + 64)
 	     . chr(($raw & 0x1f) + 64);
 	if ($mfg === "WAC") {
-		return 1;
+		return 2;
 	}
-	return 0;
+	// Priority 1: Has a valid physical EDID (preferred over a kernel-forced HDMI port with no monitor attached)
+	return 1;
 }
 
 // 1. Parse `xrandr --props` to find the exact X11 output name and its EDID

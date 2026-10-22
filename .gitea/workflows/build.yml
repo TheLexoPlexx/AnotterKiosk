@@ -46,9 +46,16 @@ jobs:
           echo "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt" >> "$GITHUB_ENV"
 
       - name: Build x86 image
+        env:
+          WIFI_PASSWORD: ${{ secrets.WIFI_PASSWORD }}
+          WIFI_SSID: ${{ vars.WIFI_SSID }}
+          SSH_AUTHORIZED_KEYS: ${{ vars.SSH_AUTHORIZED_KEYS }}
+          WACOM_URL: ${{ vars.WACOM_URL }}
+          TV_URL: ${{ vars.TV_URL }}
+          KIOSK_HOSTNAME: ${{ vars.HOSTNAME }}
         run: |
           set -euo pipefail
-          BUILD_DEPS="libguestfs-tools qemu-utils qemu-system-x86 ovmf qemu-block-extra qemu-user-static binfmt-support rsync sudo wget xz-utils pigz mount dosfstools libarchive-tools debootstrap zerofree util-linux fdisk parted e2fsprogs git ca-certificates"
+          BUILD_DEPS="libguestfs-tools qemu-utils qemu-system-x86 ovmf qemu-block-extra qemu-user-static binfmt-support rsync sudo wget xz-utils pigz mount dosfstools libarchive-tools debootstrap zerofree util-linux fdisk parted e2fsprogs git ca-certificates python3"
 
           # Check if the runner container has direct loop-mount privileges; if not, run via privileged Docker container on the runner host
           if sudo mknod -m 0660 /dev/loop-control c 10 237 2>/dev/null || [ -e /dev/loop-control ]; then
@@ -70,10 +77,19 @@ jobs:
             mkdir -p .ci/out
             cp -f anotterkiosk-*-x86.img.xz version-info .ci/out/
           "
+          DOCKER_ENV_ARGS=(
+            -e WIFI_PASSWORD
+            -e WIFI_SSID
+            -e SSH_AUTHORIZED_KEYS
+            -e WACOM_URL
+            -e TV_URL
+            -e KIOSK_HOSTNAME
+          )
 
           # Try direct bind-mount first (works when GITHUB_WORKSPACE is a host path)
           if docker run --rm -v "${GITHUB_WORKSPACE}:/workspace" debian:trixie test -f /workspace/build_x86.sh 2>/dev/null; then
             docker run --rm --privileged \
+              "${DOCKER_ENV_ARGS[@]}" \
               -v "${GITHUB_WORKSPACE}:/workspace" \
               -w /workspace \
               debian:trixie \
@@ -88,6 +104,7 @@ jobs:
           fi
           if [ -n "${SELF_CID}" ] && docker run --rm --volumes-from "${SELF_CID}" -w "${GITHUB_WORKSPACE}" debian:trixie test -f build_x86.sh 2>/dev/null; then
             docker run --rm --privileged \
+              "${DOCKER_ENV_ARGS[@]}" \
               --volumes-from "${SELF_CID}" \
               -w "${GITHUB_WORKSPACE}" \
               debian:trixie \
@@ -96,7 +113,7 @@ jobs:
           fi
 
           # Fallback: copy workspace into privileged build container and copy built artifacts back out
-          CID="$(docker create --privileged -w /workspace debian:trixie bash -exc "${BUILD_CMD}")"
+          CID="$(docker create --privileged "${DOCKER_ENV_ARGS[@]}" -w /workspace debian:trixie bash -exc "${BUILD_CMD}")"
           trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
           docker cp "${GITHUB_WORKSPACE}/." "${CID}:/workspace"
           docker start -a "${CID}"

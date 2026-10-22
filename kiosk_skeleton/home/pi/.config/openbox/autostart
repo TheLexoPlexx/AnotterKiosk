@@ -1,11 +1,12 @@
 #!/bin/bash
 
-INI="/boot/firmware/kioskbrowser.ini"
-
-# display splash screen as Openbox background
-if [ -f /boot/firmware/splash.png ]; then
-	feh --bg-center /boot/firmware/splash.png
+# Openbox's openbox-autostart invokes `sh $AUTOSTART` directly, ignoring the shebang.
+# Re-exec under bash if invoked by dash/sh.
+if [ -z "${BASH_VERSION:-}" ]; then
+	exec /bin/bash "$0" "$@"
 fi
+
+INI="/boot/firmware/kioskbrowser.ini"
 
 VNC_ENABLED=$(get-ini "${INI}" vnc enabled || echo 0)
 if [ "${VNC_ENABLED:-0}" -eq 1 ]
@@ -155,8 +156,13 @@ if [ -n "${TV_OUTPUT}" ]; then
 	xrandr --output "${TV_OUTPUT}" ${TV_MODE_ARGS} ${TV_ROTATE_ARGS} || true
 fi
 
-read -r WACOM_W WACOM_H <<< "$(get_dimensions "${WACOM_OUTPUT}" "${WACOM_RESOLUTION}" "${WACOM_ROTATE}")"
-read -r TV_W TV_H <<< "$(get_dimensions "${TV_OUTPUT}" "${TV_RESOLUTION}" "${TV_ROTATE}")"
+WACOM_DIMS=$(get_dimensions "${WACOM_OUTPUT}" "${WACOM_RESOLUTION}" "${WACOM_ROTATE}")
+WACOM_W="${WACOM_DIMS% *}"
+WACOM_H="${WACOM_DIMS#* }"
+
+TV_DIMS=$(get_dimensions "${TV_OUTPUT}" "${TV_RESOLUTION}" "${TV_ROTATE}")
+TV_W="${TV_DIMS% *}"
+TV_H="${TV_DIMS#* }"
 
 # position displays side-by-side via xrandr
 if [ -n "${WACOM_OUTPUT}" ] && [ -n "${TV_OUTPUT}" ]; then
@@ -166,8 +172,16 @@ elif [ -n "${WACOM_OUTPUT}" ]; then
 	xrandr --output "${WACOM_OUTPUT}" ${WACOM_MODE_ARGS} --pos 0x0 --primary ${WACOM_ROTATE_ARGS}
 fi
 
+# display splash screen as Openbox background AFTER xrandr layout is applied so it is not tiled
+if [ -f /boot/firmware/splash.png ]; then
+	feh --no-fehbg --bg-scale /boot/firmware/splash.png
+fi
+
 # bind all Wacom input sub-devices (Pen, Eraser, Finger Touch) strictly to WACOM_OUTPUT
 /usr/bin/kiosk-map-wacom
+
+# wake TV via CEC / HDMI signal in background
+/usr/bin/kiosk-tv-power on &
 
 # enable/disable dark mode
 DARK_MODE=$(get-ini "${INI}" browser darkmode || echo 0)
@@ -211,25 +225,6 @@ LEGACY_URL=$(get-ini "${INI}" browser url || true)
 WACOM_URL=$(get-ini "${INI}" browser wacom_url || echo "${LEGACY_URL}")
 TV_URL=$(get-ini "${INI}" browser tv_url || echo "${LEGACY_URL}")
 
-COMMON_CHROME_FLAGS=(
-	--allow-insecure-localhost
-	--autoplay-policy=no-user-gesture-required
-	--check-for-update-interval=1
-	--disable-component-update
-	--disable-features=Translate
-	--disable-features=TranslateUI
-	--disable-infobars
-	--disable-session-crashed-bubble
-	--disable-smooth-scrolling
-	--kiosk
-	--no-first-run
-	--noerrdialogs
-	--simulate-critical-update
-	--simulate-outdated-no-au='Tue, 31 Dec 2099 23:59:59 GMT'
-	--process-per-site
-	--no-memcheck
-)
-
 # start interactive Wacom Chromium instance (supervised loop)
 if [ -n "${WACOM_URL}" ]; then
 	(
@@ -240,7 +235,22 @@ if [ -n "${WACOM_URL}" ]; then
 				 --disable-pinch \
 				 --overscroll-history-navigation=0 \
 				 --touch-events=enabled \
-				 "${COMMON_CHROME_FLAGS[@]}" \
+				 --allow-insecure-localhost \
+				 --autoplay-policy=no-user-gesture-required \
+				 --check-for-update-interval=1 \
+				 --disable-component-update \
+				 --disable-features=Translate \
+				 --disable-features=TranslateUI \
+				 --disable-infobars \
+				 --disable-session-crashed-bubble \
+				 --disable-smooth-scrolling \
+				 --kiosk \
+				 --no-first-run \
+				 --noerrdialogs \
+				 --simulate-critical-update \
+				 --simulate-outdated-no-au='Tue, 31 Dec 2099 23:59:59 GMT' \
+				 --process-per-site \
+				 --no-memcheck \
 				 ${CHROME_DARK_MODE_FLAGS} \
 				 ${CHROME_GPU_FLAGS} \
 				 ${CHROME_LOW_END_FLAGS} \
@@ -252,13 +262,28 @@ if [ -n "${WACOM_URL}" ]; then
 fi
 
 # start passive TV Chromium instance (supervised loop)
-if [ -n "${TV_URL}" ]; then
+if [ -n "${TV_URL}" ] && [ -n "${TV_OUTPUT}" ]; then
 	(
 		while true; do
 			chromium --user-data-dir=/tmp/kiosk-tv \
 				 --window-position="${WACOM_W},0" \
 				 --window-size="${TV_W},${TV_H}" \
-				 "${COMMON_CHROME_FLAGS[@]}" \
+				 --allow-insecure-localhost \
+				 --autoplay-policy=no-user-gesture-required \
+				 --check-for-update-interval=1 \
+				 --disable-component-update \
+				 --disable-features=Translate \
+				 --disable-features=TranslateUI \
+				 --disable-infobars \
+				 --disable-session-crashed-bubble \
+				 --disable-smooth-scrolling \
+				 --kiosk \
+				 --no-first-run \
+				 --noerrdialogs \
+				 --simulate-critical-update \
+				 --simulate-outdated-no-au='Tue, 31 Dec 2099 23:59:59 GMT' \
+				 --process-per-site \
+				 --no-memcheck \
 				 ${CHROME_DARK_MODE_FLAGS} \
 				 ${CHROME_GPU_FLAGS} \
 				 ${CHROME_LOW_END_FLAGS} \

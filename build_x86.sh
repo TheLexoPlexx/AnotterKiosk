@@ -118,6 +118,66 @@ sudo chroot "${BUILD_DIR}" /kiosk_skeleton/build.sh
 
 sudo rm -r "${BUILD_DIR}/kiosk_skeleton"
 
+# Inject CI secrets and variables into /boot/firmware/kioskbrowser.ini and authorized_keys without echoing secrets
+{ set +x; } 2>/dev/null
+sudo WIFI_PASSWORD="${WIFI_PASSWORD:-}" \
+     WIFI_SSID="${WIFI_SSID:-}" \
+     SSH_AUTHORIZED_KEYS="${SSH_AUTHORIZED_KEYS:-}" \
+     WACOM_URL="${WACOM_URL:-}" \
+     TV_URL="${TV_URL:-}" \
+     KIOSK_HOSTNAME="${KIOSK_HOSTNAME:-}" \
+     BUILD_DIR="${BUILD_DIR}" \
+     python3 -c '
+import os, pathlib
+
+fw = pathlib.Path(os.environ["BUILD_DIR"]) / "boot" / "firmware"
+ini_path = fw / "kioskbrowser.ini"
+lines = ini_path.read_text(encoding="utf-8").splitlines()
+
+def set_ini_value(lines: list[str], section: str, key: str, val: str) -> list[str]:
+    escaped = val.replace("\\", "\\\\").replace("\"", "\\\"")
+    in_section = False
+    replaced = False
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_section and not replaced:
+                out.append(f"{key}=\"{escaped}\"")
+                replaced = True
+            in_section = (stripped[1:-1].strip() == section)
+            out.append(line)
+            continue
+        if in_section and not replaced and not stripped.startswith(";"):
+            k = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+            if k == key:
+                out.append(f"{key}=\"{escaped}\"")
+                replaced = True
+                continue
+        out.append(line)
+    if in_section and not replaced:
+        out.append(f"{key}=\"{escaped}\"")
+    return out
+
+if os.environ.get("WIFI_SSID"):
+    lines = set_ini_value(lines, "wifi", "ssid", os.environ["WIFI_SSID"])
+if os.environ.get("WIFI_PASSWORD"):
+    lines = set_ini_value(lines, "wifi", "psk", os.environ["WIFI_PASSWORD"])
+if os.environ.get("WACOM_URL"):
+    lines = set_ini_value(lines, "browser", "wacom_url", os.environ["WACOM_URL"])
+if os.environ.get("TV_URL"):
+    lines = set_ini_value(lines, "browser", "tv_url", os.environ["TV_URL"])
+if os.environ.get("KIOSK_HOSTNAME"):
+    lines = set_ini_value(lines, "general", "hostname", os.environ["KIOSK_HOSTNAME"])
+
+ini_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+auth_keys = os.environ.get("SSH_AUTHORIZED_KEYS", "").strip()
+if auth_keys:
+    (fw / "authorized_keys").write_text(auth_keys + "\n", encoding="utf-8")
+'
+set -x
+
 cp "${BUILD_DIR}/version-info" version-info
 
 # trim all filesystems

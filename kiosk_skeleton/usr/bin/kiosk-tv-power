@@ -1,0 +1,75 @@
+#!/bin/bash
+
+export DISPLAY="${DISPLAY:-:0}"
+ACTION="${1:-on}"
+INI="/boot/firmware/kioskbrowser.ini"
+
+get_tv_output() {
+	local tv_out
+	tv_out=$(get-ini "${INI}" screen tv_output 2>/dev/null || true)
+	if [ -z "${tv_out}" ] || [ "${tv_out}" = "auto" ]; then
+		local wacom_out
+		wacom_out=$(/usr/bin/kiosk-detect-wacom-output 2>/dev/null || true)
+		tv_out=$(xrandr -q 2>/dev/null | awk '/ connected/{print $1}' | grep -v "^${wacom_out}$" | sed -n '1p')
+	fi
+	echo "${tv_out}"
+}
+
+case "${ACTION}" in
+	on)
+		# 1. HDMI signal / DPMS wake
+		xset dpms force on 2>/dev/null || true
+		TV_OUTPUT="$(get_tv_output)"
+		if [ -n "${TV_OUTPUT}" ]; then
+			xrandr --output "${TV_OUTPUT}" --auto 2>/dev/null || true
+		fi
+
+		# 2. Kernel CEC framework (/dev/cec*)
+		if command -v cec-ctl >/dev/null 2>&1; then
+			for dev in /dev/cec*; do
+				if [ -e "${dev}" ]; then
+					timeout 3 cec-ctl -d "${dev}" --playback >/dev/null 2>&1 || true
+					timeout 3 cec-ctl -d "${dev}" --to 0 --image-view-on >/dev/null 2>&1 || true
+				fi
+			done
+		fi
+
+		# 3. libCEC / USB-CEC adapter (cec-client)
+		if command -v cec-client >/dev/null 2>&1; then
+			if ls /dev/ttyACM* /dev/cec* >/dev/null 2>&1; then
+				printf "on 0\nas\nq\n" | timeout 5 cec-client -s -d 1 >/dev/null 2>&1 || true
+			fi
+		fi
+		;;
+
+	off)
+		# 1. Kernel CEC framework (/dev/cec*) standby
+		if command -v cec-ctl >/dev/null 2>&1; then
+			for dev in /dev/cec*; do
+				if [ -e "${dev}" ]; then
+					timeout 3 cec-ctl -d "${dev}" --playback >/dev/null 2>&1 || true
+					timeout 3 cec-ctl -d "${dev}" --to 0 --standby >/dev/null 2>&1 || true
+				fi
+			done
+		fi
+
+		# 2. libCEC / USB-CEC adapter (cec-client) standby
+		if command -v cec-client >/dev/null 2>&1; then
+			if ls /dev/ttyACM* /dev/cec* >/dev/null 2>&1; then
+				printf "standby 0\nq\n" | timeout 5 cec-client -s -d 1 >/dev/null 2>&1 || true
+			fi
+		fi
+
+		# 3. Drop HDMI video signal on TV output so TVs with auto-standby go to sleep
+		TV_OUTPUT="$(get_tv_output)"
+		if [ -n "${TV_OUTPUT}" ]; then
+			xrandr --output "${TV_OUTPUT}" --off 2>/dev/null || true
+		fi
+		xset dpms force off 2>/dev/null || true
+		;;
+
+	*)
+		echo "Usage: $0 {on|off}" >&2
+		exit 1
+		;;
+esac

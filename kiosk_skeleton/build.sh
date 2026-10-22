@@ -5,7 +5,7 @@ set -x -e
 apt update
 
 APT_LISTCHANGES_FRONTEND=none DEBIAN_FRONTEND=noninteractive apt dist-upgrade -y --option=Dpkg::Options::=--force-confdef
-DEBIAN_FRONTEND=noninteractive apt install -y wget curl fonts-noto-color-emoji lightdm openbox nginx php-fpm php-cli chromium autossh unclutter x11-xserver-utils xserver-xorg-input-wacom libwacom-common libnss3-tools xdotool htop nano openssh-server rsync x11vnc lm-sensors ntpsec-ntpdate scrot wireless-regdb fontconfig console-data ifupdown iproute2 wpasupplicant iw wireless-tools haveged rfkill fbi feh
+DEBIAN_FRONTEND=noninteractive apt install -y wget curl fonts-noto-color-emoji lightdm openbox nginx php-fpm php-cli chromium autossh unclutter x11-xserver-utils xserver-xorg-input-wacom libwacom-common libnss3-tools cec-utils v4l-utils xdotool htop nano openssh-server rsync x11vnc lm-sensors ntpsec-ntpdate scrot wireless-regdb fontconfig console-data ifupdown iproute2 wpasupplicant iw wireless-tools haveged rfkill fbi feh
 
 rsync -a --chown=root:root "/kiosk_skeleton/." "/"
 update-ca-certificates || true
@@ -130,6 +130,7 @@ systemctl enable kiosk-set-hostname
 systemctl enable kiosk-locale
 systemctl enable ntpdate
 systemctl enable lightdm
+systemctl enable kiosk-tv-power
 systemctl enable nginx
 systemctl enable ssh
 
