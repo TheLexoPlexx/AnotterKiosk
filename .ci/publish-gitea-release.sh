@@ -57,7 +57,9 @@ existing_releases="$(curl --cacert "${CA}" -sf -H "${auth_header}" -H "${accept_
 echo "${existing_releases}" | python3 -c '
 import json, sys
 for r in json.load(sys.stdin):
-    print(f"{r.get(\"id\")} {r.get(\"tag_name\", \"\")}")
+    rid = r.get("id", "")
+    rtag = r.get("tag_name", "")
+    print(f"{rid} {rtag}")
 ' | while read -r rel_id rel_tag; do
 	if [[ -n "${rel_id}" ]]; then
 		echo "Deleting previous release id=${rel_id} (tag=${rel_tag})..."
