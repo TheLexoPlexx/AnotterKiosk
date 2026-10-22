@@ -25,8 +25,9 @@ first-lba: 34
 last-lba: 20971486
 sector-size: 512
 
-x86kiosk.img1 : start=        2048, size=     2095105, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, uuid=9C99F1BB-11A8-4BB5-82C2-555D7A38F85C, name="EFI system partition"
+x86kiosk.img1 : start=        2048, size=     2095105, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, uuid=9C99F1BB-11A8-4BB5-82C2-555D7A38F85C, name="EFI system partition"
 x86kiosk.img2 : start=     2099200, size=    18870272, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=93A9AB2C-BC29-4C6C-B6DD-1B4EDDED9A1E, name="Linux filesystem"
+x86kiosk.img3 : start=          34, size=        2014, type=21686148-6449-6E6F-744E-656564454649, uuid=5862A4C7-7D99-4670-9806-05C027A3B3D7, name="BIOS boot partition"
 END
 )
 echo "${PARTLAYOUT}" | sfdisk x86kiosk.img
@@ -44,7 +45,7 @@ done
 # Setup loop device for x86 image (with partition scanning)
 ld=$(sudo losetup -P --show -f x86kiosk.img)
 sudo partprobe "${ld}" 2>/dev/null || true
-for part in 1 2; do
+for part in 1 2 3; do
 	pdev="${ld}p${part}"
 	sysdev="/sys/class/block/$(basename "${ld}")p${part}/dev"
 	if [ ! -b "${pdev}" ] && [ -f "${sysdev}" ]; then
@@ -95,11 +96,24 @@ sudo mount sys -t sysfs -o nosuid,noexec,nodev,ro "${BUILD_DIR}/sys/"
 if ! sudo mount devpts -t devtmpfs -o mode=0755,nosuid "${BUILD_DIR}/dev/" 2>/dev/null; then
 	sudo mount --bind /dev "${BUILD_DIR}/dev/"
 fi
+# Ensure loop device and partition nodes exist inside chroot /dev for grub-install
+if [ ! -b "${BUILD_DIR}${ld}" ] && [ -f "/sys/class/block/$(basename "${ld}")/dev" ]; then
+	IFS=: read -r maj min < "/sys/class/block/$(basename "${ld}")/dev"
+	sudo mknod -m 0660 "${BUILD_DIR}${ld}" b "${maj}" "${min}" || true
+fi
+for part in 1 2 3; do
+	pdev="${ld}p${part}"
+	sysdev="/sys/class/block/$(basename "${ld}")p${part}/dev"
+	if [ ! -b "${BUILD_DIR}${pdev}" ] && [ -f "${sysdev}" ]; then
+		IFS=: read -r maj min < "${sysdev}"
+		sudo mknod -m 0660 "${BUILD_DIR}${pdev}" b "${maj}" "${min}" || true
+	fi
+done
 sudo mkdir -p "${BUILD_DIR}/dev/pts"
 sudo mount devpts -t devpts -o mode=0620,gid=5,nosuid,noexec "${BUILD_DIR}/dev/pts" || true
 
 # and then actually install everything.
-sudo chroot "${BUILD_DIR}" /setup.sh
+sudo chroot "${BUILD_DIR}" env LOOP_DEV="${ld}" /setup.sh
 sudo chroot "${BUILD_DIR}" /kiosk_skeleton/build.sh
 
 sudo rm -r "${BUILD_DIR}/kiosk_skeleton"

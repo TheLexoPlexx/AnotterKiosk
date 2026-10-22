@@ -129,8 +129,5 @@ for img in "${IMAGES[@]}"; do
 	upload_asset "${img}"
 	upload_asset "${img}.sha256"
 done
-if [[ -f "${ROOT}/version-info" ]]; then
-	upload_asset "${ROOT}/version-info"
-fi
 
 echo "Release URL: https://git.services.eisenmann-intec.local/${REPO}/releases/tag/${TAG}"

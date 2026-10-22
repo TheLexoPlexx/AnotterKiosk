@@ -53,13 +53,16 @@ if command -v certutil >/dev/null 2>&1; then
 fi
 
 # determine outputs for Wacom (interactive) and TV (passive) displays
-WACOM_OUTPUT=$(get-ini "${INI}" screen wacom_output || true)
+WACOM_OUTPUT=$(/usr/bin/kiosk-detect-wacom-output 2>/dev/null || true)
+if [ -z "${WACOM_OUTPUT}" ]; then
+	WACOM_OUTPUT=$(get-ini "${INI}" screen wacom_output || true)
+fi
 TV_OUTPUT=$(get-ini "${INI}" screen tv_output || true)
 
 if [ -z "${WACOM_OUTPUT}" ]; then
 	WACOM_OUTPUT=$(xrandr -q | awk '/ connected/{print $1}' | sed -n '1p')
 fi
-if [ -z "${TV_OUTPUT}" ]; then
+if [ -z "${TV_OUTPUT}" ] || [ "${TV_OUTPUT}" = "auto" ]; then
 	TV_OUTPUT=$(xrandr -q | awk '/ connected/{print $1}' | grep -v "^${WACOM_OUTPUT}$" | sed -n '1p')
 fi
 

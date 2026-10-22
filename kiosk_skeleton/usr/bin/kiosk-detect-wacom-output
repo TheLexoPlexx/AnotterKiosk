@@ -1,0 +1,137 @@
+#!/usr/bin/env php
+<?php
+// Auto-detects the X11 output name (e.g. DP-1) belonging to the Wacom display tablet
+// by matching the connected Wacom USB device serial (uniq) against the display EDID (or Wacom EDID manufacturer WAC).
+
+$ini_file = "/boot/firmware/kioskbrowser.ini";
+$config = @parse_ini_file($ini_file, true, INI_SCANNER_NORMAL) ?: [];
+
+$configured_output = trim($config["screen"]["wacom_output"] ?? "");
+if ($configured_output !== "" && strtolower($configured_output) !== "auto") {
+	echo $configured_output;
+	exit(0);
+}
+
+// Collect candidate Wacom serial numbers dynamically from connected Wacom HID devices (056a:*) or optional INI override
+$serials = [];
+if (!empty($config["screen"]["wacom_serial"])) {
+	$serials[] = trim($config["screen"]["wacom_serial"]);
+}
+foreach (glob("/sys/bus/hid/devices/*056A*/input/input*/uniq") ?: [] as $uniq_file) {
+	$s = trim((string)@file_get_contents($uniq_file));
+	if ($s !== "") {
+		$serials[] = $s;
+	}
+}
+$serials = array_values(array_unique($serials));
+
+function edid_matches_wacom(string $edid_bin, array $serials): int {
+	if (strlen($edid_bin) < 128) {
+		return 0;
+	}
+	// Priority 3 (highest): exact serial number match in EDID
+	foreach ($serials as $serial) {
+		if ($serial !== "" && strpos($edid_bin, $serial) !== false) {
+			return 3;
+		}
+	}
+	// Priority 2: Wacom model name in EDID descriptor (e.g. "Wacom DTC141")
+	if (stripos($edid_bin, "Wacom") !== false || stripos($edid_bin, "DTC141") !== false) {
+		return 2;
+	}
+	// Priority 1: EDID Manufacturer ID == "WAC" (0x5c23 at bytes 8..9)
+	$raw = unpack("n", substr($edid_bin, 8, 2))[1];
+	$mfg = chr((($raw >> 10) & 0x1f) + 64)
+	     . chr((($raw >> 5) & 0x1f) + 64)
+	     . chr(($raw & 0x1f) + 64);
+	if ($mfg === "WAC") {
+		return 1;
+	}
+	return 0;
+}
+
+// 1. Parse `xrandr --props` to find the exact X11 output name and its EDID
+$xrandr_props = (string)@shell_exec("xrandr --props 2>/dev/null");
+$best_output = "";
+$best_score = 0;
+$connected_outputs = [];
+
+if ($xrandr_props !== "") {
+	$lines = explode("\n", $xrandr_props);
+	$current_out = "";
+	$in_edid = false;
+	$edid_hex = "";
+
+	$flush_edid = function () use (&$current_out, &$edid_hex, &$best_output, &$best_score, $serials) {
+		if ($current_out !== "" && $edid_hex !== "") {
+			$bin = @hex2bin($edid_hex);
+			if ($bin !== false) {
+				$score = edid_matches_wacom($bin, $serials);
+				if ($score > $best_score) {
+					$best_score = $score;
+					$best_output = $current_out;
+				}
+			}
+		}
+		$edid_hex = "";
+	};
+
+	foreach ($lines as $line) {
+		if (preg_match('/^([A-Za-z0-9_-]+)\s+connected\b/', $line, $m)) {
+			$flush_edid();
+			$current_out = $m[1];
+			$connected_outputs[] = $current_out;
+			$in_edid = false;
+		} elseif (preg_match('/^[A-Za-z0-9_-]+\s+disconnected\b/', $line)) {
+			$flush_edid();
+			$current_out = "";
+			$in_edid = false;
+		} elseif ($current_out !== "" && preg_match('/^\s+EDID:\s*$/', $line)) {
+			$in_edid = true;
+			$edid_hex = "";
+		} elseif ($in_edid) {
+			if (preg_match('/^\s+([0-9a-fA-F]{16,})\s*$/', $line, $m)) {
+				$edid_hex .= $m[1];
+			} else {
+				$in_edid = false;
+				$flush_edid();
+			}
+		}
+	}
+	$flush_edid();
+}
+
+if ($best_output !== "") {
+	echo $best_output;
+	exit(0);
+}
+
+// 2. Fallback: Check /sys/class/drm/card*-*/edid and map to connected xrandr output name
+foreach (glob("/sys/class/drm/card*-*/edid") ?: [] as $edid_path) {
+	$bin = (string)@file_get_contents($edid_path);
+	$score = edid_matches_wacom($bin, $serials);
+	if ($score > $best_score) {
+		$drm_name = preg_replace('/^card[0-9]+-/', '', basename(dirname($edid_path)));
+		$alt_name = str_replace('HDMI-A-', 'HDMI-', $drm_name);
+		if (in_array($drm_name, $connected_outputs, true)) {
+			$best_output = $drm_name;
+			$best_score = $score;
+		} elseif (in_array($alt_name, $connected_outputs, true)) {
+			$best_output = $alt_name;
+			$best_score = $score;
+		} else {
+			$best_output = $drm_name;
+			$best_score = $score;
+		}
+	}
+}
+
+if ($best_output !== "") {
+	echo $best_output;
+	exit(0);
+}
+
+// 3. Final fallback: first connected output
+if (!empty($connected_outputs)) {
+	echo $connected_outputs[0];
+}

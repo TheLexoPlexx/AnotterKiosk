@@ -108,11 +108,13 @@ In [`kioskbrowser.ini`](kiosk_skeleton/boot/firmware/kioskbrowser.ini), two disp
 
 ```ini
 [screen]
-wacom_output = "DP-1"
+; Optional: auto-detected by matching the connected Wacom USB serial against display EDIDs if omitted
+;wacom_output = "DP-1"
 ;wacom_resolution = "1920x1080"
 ;wacom_rotate = "normal"
 
-tv_output = "HDMI-1"
+; Optional: auto-selects the remaining connected output if omitted
+;tv_output = "HDMI-1"
 ;tv_resolution = "1920x1080"
 ;tv_rotate = "normal"
 
@@ -121,6 +123,7 @@ wacom_url="https://example.com/interactive"
 tv_url="https://example.com/dashboard"
 ```
 
+- **Automatic Display & Tablet Matching:** [`kiosk-detect-wacom-output`](kiosk_skeleton/usr/bin/kiosk-detect-wacom-output) dynamically reads the connected Wacom USB device's serial (`/sys/bus/hid/devices/*056A*/input/input*/uniq`) at runtime and matches it against the X11/DRM display EDIDs (along with Wacom's `WAC` EDID manufacturer ID), so the interactive browser and Wacom touch/pen input are automatically bound to the Wacom screen on any unit regardless of which video port it is plugged into.
 - **Automatic vs. Explicit Resolution:** If `wacom_resolution` or `tv_resolution` is omitted/commented out, `xrandr --auto` activates each screen's native EDID resolution and automatically calculates the window sizes and side-by-side offset (`${WACOM_W}x0`) for the two Chromium instances.
 - **Wacom Input Binding:** All Wacom sub-devices (Pen, Eraser, Finger Touch) are bound strictly to `wacom_output` on startup and automatically re-bound via `udev` (`99-wacom-kiosk.rules` -> `kiosk-wacom-remap.service`) if the Wacom USB cable is unplugged and reconnected.
 

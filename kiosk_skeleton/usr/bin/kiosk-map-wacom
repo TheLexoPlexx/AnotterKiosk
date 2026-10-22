@@ -3,7 +3,10 @@
 export DISPLAY="${DISPLAY:-:0}"
 
 INI="/boot/firmware/kioskbrowser.ini"
-WACOM_OUTPUT=$(get-ini "${INI}" screen wacom_output 2>/dev/null || true)
+WACOM_OUTPUT=$(/usr/bin/kiosk-detect-wacom-output 2>/dev/null || true)
+if [ -z "${WACOM_OUTPUT}" ]; then
+	WACOM_OUTPUT=$(get-ini "${INI}" screen wacom_output 2>/dev/null || true)
+fi
 if [ -z "${WACOM_OUTPUT}" ]; then
 	WACOM_OUTPUT=$(xrandr -q 2>/dev/null | awk '/ connected/{print $1; exit}')
 fi
