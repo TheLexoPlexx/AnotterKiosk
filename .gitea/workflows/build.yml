@@ -1,0 +1,82 @@
+name: Build x86 Kiosk Image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-x86:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install CI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl iproute2 python3
+
+      - name: Install and Configure Certificates
+        run: |
+          set -euo pipefail
+          # Resolve git.services.eisenmann-intec.local via DNS or fallback to container gateway IP
+          if ! getent hosts git.services.eisenmann-intec.local >/dev/null 2>&1; then
+            gateway_ip="$(ip -4 route show default | awk 'NR==1 {print $3}')"
+            if [ -n "$gateway_ip" ]; then
+              echo "${gateway_ip} git.services.eisenmann-intec.local" | sudo tee -a /etc/hosts
+            fi
+          fi
+          getent hosts git.services.eisenmann-intec.local
+          mkdir -p .ci
+          # Fetch corporate/Gitea Root CA so both CI and the built AnotterKiosk image trust internal HTTPS
+          curl -fsSLk https://git.services.eisenmann-intec.local/ca.crt -o .ci/registry-ca.crt
+          sudo cp .ci/registry-ca.crt /usr/local/share/ca-certificates/eisenmann-intec.crt
+          sudo update-ca-certificates
+          echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" >> "$GITHUB_ENV"
+          echo "GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt" >> "$GITHUB_ENV"
+          echo "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt" >> "$GITHUB_ENV"
+
+      - name: Build x86 image
+        run: |
+          set -euo pipefail
+          BUILD_DEPS="libguestfs-tools qemu-utils qemu-system-x86 ovmf qemu-block-extra qemu-user-static binfmt-support rsync sudo wget xz-utils pigz mount dosfstools libarchive-tools debootstrap zerofree util-linux fdisk parted e2fsprogs git ca-certificates"
+
+          # Check if the runner container has direct loop-mount privileges; if not, run via privileged Docker container on the runner host
+          if sudo mknod -m 0660 /dev/loop-control c 10 237 2>/dev/null || [ -e /dev/loop-control ]; then
+            if sudo losetup -f >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo DEBIAN_FRONTEND=noninteractive apt-get install -yqq $BUILD_DEPS
+              ./build_x86.sh
+              exit 0
+            fi
+          fi
+
+          echo "Runner container lacks direct loop-device privileges; running build in a privileged container..."
+          docker run --rm --privileged \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -w /workspace \
+            debian:trixie \
+            bash -exc "
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -yqq ${BUILD_DEPS}
+              cp /workspace/.ci/registry-ca.crt /usr/local/share/ca-certificates/eisenmann-intec.crt
+              update-ca-certificates
+              ./build_x86.sh
+            "
+
+      - name: Publish image to Gitea Release
+        if: github.event_name != 'pull_request'
+        env:
+          GITEA_API_URL: ${{ gitea.api_url }}
+          GITEA_REPOSITORY: ${{ gitea.repository }}
+          GITEA_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.GITEA_TOKEN || github.token }}
+        run: bash .ci/publish-gitea-release.sh

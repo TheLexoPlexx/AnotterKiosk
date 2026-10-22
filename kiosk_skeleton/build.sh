@@ -8,6 +8,7 @@ APT_LISTCHANGES_FRONTEND=none DEBIAN_FRONTEND=noninteractive apt dist-upgrade -y
 DEBIAN_FRONTEND=noninteractive apt install -y wget curl fonts-noto-color-emoji lightdm openbox nginx php-fpm php-cli chromium autossh unclutter x11-xserver-utils xserver-xorg-input-wacom libwacom-common libnss3-tools xdotool htop nano openssh-server rsync x11vnc lm-sensors ntpsec-ntpdate scrot wireless-regdb fontconfig console-data ifupdown iproute2 wpasupplicant iw wireless-tools haveged rfkill fbi feh
 
 rsync -a --chown=root:root "/kiosk_skeleton/." "/"
+update-ca-certificates || true
 
 # Raspberry Pi specific modifications
 # raspberrypi-net-mods does things like copying /boot/firmware/wpa_supplicant.conf to the root FS

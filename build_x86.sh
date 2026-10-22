@@ -31,8 +31,27 @@ END
 )
 echo "${PARTLAYOUT}" | sfdisk x86kiosk.img
 
+# Ensure loop device nodes exist when running inside a container
+if [ ! -e /dev/loop-control ]; then
+	sudo mknod -m 0660 /dev/loop-control c 10 237 || true
+fi
+for i in $(seq 0 15); do
+	if [ ! -b "/dev/loop${i}" ]; then
+		sudo mknod -m 0660 "/dev/loop${i}" b 7 "${i}" || true
+	fi
+done
+
 # Setup loop device for x86 image (with partition scanning)
 ld=$(sudo losetup -P --show -f x86kiosk.img)
+sudo partprobe "${ld}" 2>/dev/null || true
+for part in 1 2; do
+	pdev="${ld}p${part}"
+	sysdev="/sys/class/block/$(basename "${ld}")p${part}/dev"
+	if [ ! -b "${pdev}" ] && [ -f "${sysdev}" ]; then
+		IFS=: read -r maj min < "${sysdev}"
+		sudo mknod -m 0660 "${pdev}" b "${maj}" "${min}"
+	fi
+done
 
 # Create filesystems
 sudo mkfs.ext4 "${ld}p2"
@@ -44,27 +63,40 @@ sudo mkdir -p "${BUILD_DIR}/boot/firmware"
 sudo mount "${ld}p1" "${BUILD_DIR}/boot/firmware"
 
 # Debootstrap debian
-sudo debootstrap --include=linux-image-amd64,grub-efi,sudo --arch amd64 trixie "${BUILD_DIR}" http://deb.debian.org/debian/
+sudo debootstrap --include=linux-image-amd64,grub-efi,sudo,ca-certificates --arch amd64 trixie "${BUILD_DIR}" http://deb.debian.org/debian/
 
 # Copy the skeleton files
 sudo rsync -a "${SCRIPT_DIR}/x86_skeleton/." "${BUILD_DIR}"
 sudo rsync -a "${SCRIPT_DIR}/kiosk_skeleton/." "${BUILD_DIR}/kiosk_skeleton"
 
-# Create fstab
-fat_uuid=$(lsblk -no UUID "${ld}p1")
-ext_uuid=$(lsblk -no UUID "${ld}p2")
+# Inject internal Root CA into system trust store and Chromium NSS skeleton if present
+if [ -f "${SCRIPT_DIR}/.ci/registry-ca.crt" ]; then
+	sudo mkdir -p "${BUILD_DIR}/kiosk_skeleton/usr/local/share/ca-certificates"
+	sudo cp "${SCRIPT_DIR}/.ci/registry-ca.crt" "${BUILD_DIR}/kiosk_skeleton/usr/local/share/ca-certificates/eisenmann-intec.crt"
+	sudo mkdir -p "${BUILD_DIR}/kiosk_skeleton/etc/skel/.pki/ca-certificates"
+	sudo cp "${SCRIPT_DIR}/.ci/registry-ca.crt" "${BUILD_DIR}/kiosk_skeleton/etc/skel/.pki/ca-certificates/eisenmann-intec.crt"
+fi
+
+# Create fstab (use blkid so UUID detection works without udevd inside containers)
+fat_uuid=$(sudo blkid -s UUID -o value "${ld}p1")
+ext_uuid=$(sudo blkid -s UUID -o value "${ld}p2")
 
 echo "UUID=${fat_uuid}  /boot/firmware  vfat    ro,defaults          0       2" | sudo tee "${BUILD_DIR}/etc/fstab"
 echo "UUID=${ext_uuid}  /               ext4    ro,defaults,noatime  0       1" | sudo tee -a "${BUILD_DIR}/etc/fstab"
 
 # Include git repo version info
+git config --global --add safe.directory "${SCRIPT_DIR}" 2>/dev/null || true
 echo -n "AnotterKiosk x86 version: " > "${BUILD_DIR}/version-info"
 git describe --abbrev=4 --dirty --always --tags >> "${BUILD_DIR}/version-info"
 
 # Mount system partitions (from the build host)
 sudo mount proc -t proc -o nosuid,noexec,nodev "${BUILD_DIR}/proc/"
 sudo mount sys -t sysfs -o nosuid,noexec,nodev,ro "${BUILD_DIR}/sys/"
-sudo mount devpts -t devtmpfs -o mode=0755,nosuid "${BUILD_DIR}/dev/"
+if ! sudo mount devpts -t devtmpfs -o mode=0755,nosuid "${BUILD_DIR}/dev/" 2>/dev/null; then
+	sudo mount --bind /dev "${BUILD_DIR}/dev/"
+fi
+sudo mkdir -p "${BUILD_DIR}/dev/pts"
+sudo mount devpts -t devpts -o mode=0620,gid=5,nosuid,noexec "${BUILD_DIR}/dev/pts" || true
 
 # and then actually install everything.
 sudo chroot "${BUILD_DIR}" /setup.sh
@@ -82,10 +114,12 @@ sudo fstrim -a
 sudo dd if=/dev/zero of="${BUILD_DIR}/boot/firmware/zerofree" bs=1M || true
 sudo rm "${BUILD_DIR}/boot/firmware/zerofree" || true
 
+sudo umount -fl "${BUILD_DIR}/dev/pts" || true
 sudo umount -fl "${BUILD_DIR}/proc" || true
 sudo umount -fl "${BUILD_DIR}/sys" || true
 sudo umount -fl "${BUILD_DIR}/dev" || true
 
+sudo umount "${BUILD_DIR}/dev/pts" || true
 sudo umount "${BUILD_DIR}/proc" || true
 sudo umount "${BUILD_DIR}/sys" || true
 sudo umount "${BUILD_DIR}/dev" || true

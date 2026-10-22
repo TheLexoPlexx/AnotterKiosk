@@ -1,4 +1,8 @@
 raspikiosk.img
 raspios.img.xz
+x86kiosk.img
+anotterkiosk-*.img*
+version-info
 work/
+.ci/registry-ca.crt
 .DS_Store
