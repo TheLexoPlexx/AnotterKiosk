@@ -221,6 +221,15 @@ else
 	CHROME_CACHE_FLAGS=""
 fi
 
+# Accept any TLS certificate when the config asks for it.
+IGNORE_CERTS=$(get-ini "${INI}" browser ignore_certificate_errors || echo 0)
+if [ "${IGNORE_CERTS:-0}" -eq 1 ]
+then
+	CHROME_CERT_FLAGS="--ignore-certificate-errors"
+else
+	CHROME_CERT_FLAGS=""
+fi
+
 LEGACY_URL=$(get-ini "${INI}" browser url || true)
 WACOM_URL=$(get-ini "${INI}" browser wacom_url || echo "${LEGACY_URL}")
 TV_URL=$(get-ini "${INI}" browser tv_url || echo "${LEGACY_URL}")
@@ -255,6 +264,7 @@ if [ -n "${WACOM_URL}" ]; then
 				 ${CHROME_GPU_FLAGS} \
 				 ${CHROME_LOW_END_FLAGS} \
 				 ${CHROME_CACHE_FLAGS} \
+				 ${CHROME_CERT_FLAGS} \
 				 "${WACOM_URL}"
 			sleep 2
 		done
@@ -288,6 +298,7 @@ if [ -n "${TV_URL}" ] && [ -n "${TV_OUTPUT}" ]; then
 				 ${CHROME_GPU_FLAGS} \
 				 ${CHROME_LOW_END_FLAGS} \
 				 ${CHROME_CACHE_FLAGS} \
+				 ${CHROME_CERT_FLAGS} \
 				 "${TV_URL}"
 			sleep 2
 		done
